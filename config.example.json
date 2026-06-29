@@ -1,0 +1,22 @@
+{
+  "project_dir": ".",
+  "timeout_seconds": 6,
+  "firecracker": {
+    "binary": "firecracker",
+    "kernel_image": "",
+    "rootfs_image": "",
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"
+  },
+  "kvmtool": {
+    "binary": "lkvm",
+    "kernel_image": "",
+    "rootfs_image": "",
+    "boot_args": "console=ttyS0 reboot=k panic=1"
+  },
+  "crosvm": {
+    "binary": "crosvm",
+    "kernel_image": "",
+    "rootfs_image": "",
+    "boot_args": "console=ttyS0 reboot=k panic=1"
+  }
+}

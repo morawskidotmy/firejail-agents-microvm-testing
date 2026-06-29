@@ -1,0 +1,36 @@
+[project]
+name = "vm-firejail-lab"
+version = "0.1.0"
+description = "Compare Firejail-only and VM-plus-Firejail sandbox stacks for AI coding workloads."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "B",
+  "UP",
+  "C901",
+  "SIM",
+  "PTH",
+  "C4",
+  "PIE",
+  "RUF",
+  "DTZ",
+  "RET",
+  "ARG",
+  "PERF",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15

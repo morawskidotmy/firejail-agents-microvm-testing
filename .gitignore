@@ -1,0 +1,9 @@
+.venv/
+.ruff_cache/
+__pycache__/
+*.pyc
+config.json
+
+# Generated local reports include absolute paths and process IDs.
+results/latest.*
+results/*.tmp
