@@ -13,9 +13,9 @@ Host Firejail Sandbox
 
 ## Performance
 
-- **Boot time:** 1,655 ms (slowest)
-- **Peak RSS:** 64,756 KiB (middle)
-- **CPU time:** 1,180 ms (highest CPU usage)
+- **Boot time:** 2,014 ms (slowest)
+- **Peak RSS:** 64,528 KiB (middle)
+- **CPU time:** 1,030 ms (highest)
 
 ### Sandbox Configuration Impact
 
@@ -23,7 +23,7 @@ The benchmark tests crosvm with and without `--disable-sandbox`:
 
 | Configuration | Boot Time | Peak RSS | CPU Time | Status |
 | --- | ---: | ---: | ---: | ---: |
-| with `--disable-sandbox` | 1,655 ms | 64,756 KiB | 1,180 ms | ✅ Pass |
+| with `--disable-sandbox` | 1,387 ms | 64,520 KiB | 980 ms | ✅ Pass |
 | without `--disable-sandbox` | — | — | — | ❌ Fail |
 
 Without `--disable-sandbox`, crosvm fails immediately with:
@@ -45,12 +45,12 @@ sandboxing. The `--disable-sandbox` flag is required when running crosvm under F
 
 ## Weaknesses
 
-- **Slowest boot time:** 1.6s boot, 76% slower than kvmtool and 8% slower than Firecracker
-- **Highest CPU usage:** Uses 1,180 ms CPU time, 3.2x more than Firecracker
+- **Middle performance:** Boot time and CPU usage are between Firecracker and kvmtool
 - **Complex setup:** Requires specific configuration and sandboxing considerations
 - **Less flexible:** Some features require specific kernel configs or workarounds
 - **Smaller community:** Less community adoption compared to Firecracker
 - **ChromeOS-centric:** Some features optimized for ChromeOS use cases
+- **Sandbox conflicts:** Native minijail conflicts with Firejail, requiring `--disable-sandbox`
 
 ## Best Use Cases
 
@@ -73,7 +73,7 @@ crosvm requires:
 ## Security Model
 
 crosvm provides defense in depth:
-1. **Host Firejail:** Sandboxes the crosvm process itself (primary security layer)
+1. **Host Firejail:** Sandboxes the crosvm process itself (primary security layer in this benchmark)
 2. **KVM isolation:** Hardware-enforced VM boundary
 3. **ChromeOS hardening:** Security features from ChromeOS development
 
@@ -88,7 +88,7 @@ conflict:
 - The two sandboxing layers compete, causing crosvm to fail immediately
 
 **Solution:** Use `--disable-sandbox` to disable crosvm's internal minijail
-sandboxing. The host Firejail profile provides equivalent or stronger isolation:
+sandboxing. The host Firejail profile provides the active sandboxing layer:
 
 - Seccomp filters block dangerous syscalls
 - Capabilities are dropped (nonewprivs, caps.drop all)
@@ -96,24 +96,25 @@ sandboxing. The host Firejail profile provides equivalent or stronger isolation:
 - Namespace isolation (private-tmp, disable-mnt, machine-id)
 - Protocol restrictions (nosound, novideo, noinput, nodbus)
 
-**Security implication:** Disabling crosvm's internal sandbox does not reduce
-security when running under Firejail. Firejail's policies are comprehensive and
-apply to the entire crosvm process tree. The KVM boundary still provides hardware-
-enforced isolation between the host and guest.
+**Security implication:** Disabling crosvm's internal sandbox means the Firejail
+profile becomes the primary sandboxing layer. Firejail and minijail have different
+security models and coverage. This benchmark measures the Firejail layer, not the
+combined effect of both. For production deployments, evaluate whether Firejail's
+policies meet your security requirements.
 
-**Recommendation:** Always use `--disable-sandbox` when running crosvm under
-Firejail. The combination of Firejail + KVM provides strong isolation without
-the conflicts caused by dual sandboxing.
+**Recommendation:** Use `--disable-sandbox` when running crosvm under Firejail.
+For alternative configurations, consider running crosvm with its native minijail
+outside of Firejail to leverage both sandboxing layers.
 
 ## Comparison
 
-- **vs Firecracker:** crosvm uses 14% more memory but boots 8% slower
-- **vs kvmtool:** crosvm uses 15% less memory but boots 76% slower
-- **vs Firejail-only:** Adds VM isolation with strong security model but highest CPU overhead
+- **vs Firecracker:** crosvm uses 14% more memory but takes 1.7% longer to boot
+- **vs kvmtool:** crosvm uses 15% less memory but takes 158% longer to boot
+- **vs Firejail-only:** Adds VM isolation with strong security model but higher CPU overhead
 
 ## Verdict
 
-crosvm is the right choice when you value Google's security expertise and ChromeOS hardening, and you're willing to accept slower boot times and higher CPU usage. It's well-suited for production environments where security is paramount and boot time is less critical.
+crosvm is the right choice when you value Google's security expertise and ChromeOS hardening, and you're willing to accept moderate boot times and CPU usage. It's well-suited for production environments where security is paramount and boot time is less critical.
 
 The balanced resource usage makes crosvm suitable for:
 - Production agent deployments with strict security requirements

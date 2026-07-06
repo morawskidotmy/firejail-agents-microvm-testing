@@ -13,9 +13,9 @@ Host Firejail Sandbox
 
 ## Performance
 
-- **Boot time:** 1,508 ms
-- **Peak RSS:** 56,636 KiB (lowest of all VMMs)
-- **CPU time:** 370 ms
+- **Boot time:** 1,981 ms (middle)
+- **Peak RSS:** 56,776 KiB (lowest of all VMMs)
+- **CPU time:** 310 ms (lowest)
 
 ## Strengths
 
@@ -63,8 +63,8 @@ The combination of host Firejail + Firecracker's minimal device model provides s
 
 ## Comparison
 
-- **vs kvmtool:** Firecracker uses 25% less memory but boots 62% slower
-- **vs crosvm:** Firecracker uses 12% less memory but boots 8% slower
+- **vs kvmtool:** Firecracker uses 25% less memory but takes 154% longer to boot
+- **vs crosvm:** Firecracker uses 12% less memory and takes 1.6% less time to boot
 - **vs Firejail-only:** Adds VM isolation layer but requires KVM and more resources
 
 ## Verdict

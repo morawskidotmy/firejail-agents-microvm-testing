@@ -73,6 +73,7 @@ class Measurement:
     stdout_tail: str
     stderr_tail: str
     boot_marker_ms: int | None = None
+    guest_probe_results: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +283,12 @@ def run_measured_with_marker(
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     observed_ms = round((time.perf_counter() - started) * 1000)
 
+    stdout_combined = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+    stderr_combined = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+
+    # Extract guest probe results if present
+    guest_probe_results = extract_guest_probe_results(stdout_combined + stderr_combined)
+
     return Measurement(
         returncode=proc.returncode,
         timed_out=timed_out,
@@ -291,9 +298,10 @@ def run_measured_with_marker(
         max_rss_kib=max_rss,
         max_processes=max_processes,
         processes=process_measurements(states, observed_ms),
-        stdout_tail=tail(b"".join(stdout_chunks).decode("utf-8", errors="replace"), 4000),
-        stderr_tail=tail(b"".join(stderr_chunks).decode("utf-8", errors="replace"), 4000),
+        stdout_tail=tail(stdout_combined, 4000),
+        stderr_tail=tail(stderr_combined, 4000),
         boot_marker_ms=marker_ms,
+        guest_probe_results=guest_probe_results,
     )
 
 
@@ -554,6 +562,21 @@ def binary_probe(stack: Stack, config: dict[str, Any], root: Path, timeout: int)
 
 def usage_exit(result: Measurement) -> bool:
     return result.returncode == 22 and "usage:" in result.stdout_tail.lower()
+
+
+def extract_guest_probe_results(output: str) -> dict[str, Any] | None:
+    """Extract guest probe JSON results from boot output."""
+    import re
+
+    # Look for JSON between GUEST PROBE markers
+    pattern = r"=== GUEST PROBE START ===\s*(\{.*?\})\s*=== GUEST PROBE END ==="
+    match = re.search(pattern, output, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return None
+    return None
 
 
 def boot_probe(stack: Stack, config: dict[str, Any], root: Path) -> ProbeResult:
@@ -828,7 +851,11 @@ def action_probes(stack: Stack, root: Path, timeout: int) -> list[ProbeResult]:
 def probe_to_dict(probe: ProbeResult) -> dict[str, Any]:
     data = asdict(probe)
     if probe.measurement is not None:
-        data["measurement"] = asdict(probe.measurement)
+        measurement_dict = asdict(probe.measurement)
+        # Remove guest_probe_results if None to keep output clean
+        if measurement_dict.get("guest_probe_results") is None:
+            measurement_dict.pop("guest_probe_results", None)
+        data["measurement"] = measurement_dict
     return data
 
 
@@ -882,6 +909,10 @@ def probe_line(probe: dict[str, Any]) -> str:
     top_processes = process_summary(measurement.get("processes", []))
     if top_processes:
         line += f"; top_processes={top_processes}"
+    # Add guest probe results if present
+    guest_probe = measurement.get("guest_probe_results")
+    if guest_probe:
+        line += f"; guest_probe={json.dumps(guest_probe, sort_keys=True)}"
     return line
 
 
@@ -920,9 +951,11 @@ def comparison_lines(payload: dict[str, Any]) -> list[str]:
         f"{len(layered)} VMM profiles.",
         "Firejail-only is lighter and does not expose /dev/kvm, but a sandbox escape "
         "reaches the host user session directly.",
-        "VM-plus-Firejail adds a guest kernel boundary and a guest Firejail layer, "
+        "VM-plus-Firejail adds a guest kernel boundary and a direct guest probe, "
         "but needs VMM binaries, guest images, and /dev/kvm exposure to the "
         "host-side VMM process.",
+        "Guest Firejail is not yet integrated; the current benchmark runs a "
+        "direct shell probe inside the minimal guest VM.",
         "Performance boot overhead could not be measured unless the VMM binary plus "
         "kernel/rootfs paths are configured.",
         "",

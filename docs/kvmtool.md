@@ -13,9 +13,9 @@ Host Firejail Sandbox
 
 ## Performance
 
-- **Boot time:** 929 ms (fastest)
-- **Peak RSS:** 75,764 KiB (highest)
-- **CPU time:** 510 ms
+- **Boot time:** 779 ms (fastest)
+- **Peak RSS:** 75,928 KiB (highest)
+- **CPU time:** 410 ms
 
 ## Strengths
 
@@ -63,8 +63,8 @@ The combination of host Firejail + kvmtool provides good isolation through the V
 
 ## Comparison
 
-- **vs Firecracker:** kvmtool boots 38% faster but uses 34% more memory
-- **vs crosvm:** kvmtool boots 43% faster but uses 17% more memory
+- **vs Firecracker:** kvmtool boots 154% faster but uses 34% more memory
+- **vs crosvm:** kvmtool boots 158% faster but uses 18% more memory
 - **vs Firejail-only:** Adds VM isolation layer with fastest boot time
 
 ## Verdict

@@ -61,23 +61,45 @@ Measured time from VMM launch to guest init printing "VM boot successful!" marke
 
 | VMM | Boot Time | Peak RSS | CPU Time |
 | --- | ---: | ---: | ---: |
-| kvmtool | 1,023 ms | 67,904 KiB | 600 ms |
-| Firecracker | 1,485 ms | 45,308 KiB | 370 ms |
-| crosvm | 1,660 ms | 64,588 KiB | 1,170 ms |
+| kvmtool | 779 ms | 75,928 KiB | 410 ms |
+| crosvm | 2,014 ms | 64,528 KiB | 1,030 ms |
+| Firecracker | 1,981 ms | 56,776 KiB | 310 ms |
 
 ```text
 Boot Time (ms)
-kvmtool        ################################### 1023
-firecracker    ################################################# 1485
-crosvm         ##################################################### 1660
+kvmtool        ####################### 779
+firecracker    ############################################### 1981
+crosvm         ################################################ 2014
 ```
 
-kvmtool boots fastest at 1,023ms, while Firecracker uses the least memory at
-45,308 KiB peak RSS. All three VMMs complete boot within 1.7 seconds under
+kvmtool boots fastest at 779ms, while Firecracker uses the least memory at
+56,776 KiB peak RSS. All three VMMs complete boot within 2 seconds under
 Firejail sandboxing.
 
 See [docs/firecracker.md](docs/firecracker.md), [docs/kvmtool.md](docs/kvmtool.md),
 and [docs/crosvm.md](docs/crosvm.md) for detailed analysis of each VMM.
+
+### Guest Probe
+
+The benchmark now captures a **direct guest shell probe** (`tests/guest_probe.sh`)
+that runs inside each minimal VM during boot. The probe reports what the guest
+environment can see (devices, sensitive paths, network files, Firejail availability).
+
+```text
+host firejail sandbox
+  -> VMM process: firecracker | lkvm | crosvm
+    -> minimal guest VM
+      -> /init -> /guest_probe.sh  (direct shell probe, captured in results)
+```
+
+The guest probe confirms that all three VMMs boot successfully and the probe
+output is parsed into `results/latest.json` under each `vm_boot` measurement.
+
+**Guest Firejail is future work.** Running Firejail inside the minimal busybox
+rootfs currently fails due to missing shared libraries (`libapparmor.so.1`,
+`libselinux.so.1`, `libpcre2-8.so.0`) and runtime directories. A richer guest
+rootfs with Python and full Firejail support is needed for the full layered
+model: host Firejail → VMM → guest kernel → guest Firejail → agent.
 
 ## crosvm Sandbox Configuration
 
@@ -86,7 +108,7 @@ The benchmark tests both configurations:
 
 | Configuration | Boot Time | Peak RSS | CPU Time | Status |
 | --- | ---: | ---: | ---: | ---: |
-| crosvm with `--disable-sandbox` | 1,655 ms | 64,756 KiB | 1,180 ms | ✅ Pass |
+| crosvm with `--disable-sandbox` | 2,014 ms | 64,528 KiB | 1,030 ms | ✅ Pass |
 | crosvm without `--disable-sandbox` | — | — | — | ❌ Fail |
 
 **Why `--disable-sandbox` is required:**
@@ -98,13 +120,14 @@ with Firejail's sandboxing. Without `--disable-sandbox`, crosvm fails with:
 ERROR crosvm: exiting with error 1: "/var/empty" is not a directory, cannot create jail
 ```
 
-The sandboxing is still provided by the host Firejail profile, which applies
-comprehensive security policies including seccomp filters, capability drops,
-filesystem blacklists, and namespace isolation. crosvm's internal sandbox is
-redundant when running under Firejail.
+The host Firejail profile provides the active sandboxing layer for crosvm in this
+benchmark. crosvm's internal minijail sandboxing is disabled to avoid conflicts.
+Note that Firejail and minijail have different security models and coverage; this
+benchmark measures the Firejail layer, not the combined effect of both.
 
-**Recommendation:** Always use `--disable-sandbox` when running crosvm under
-Firejail. The Firejail profile provides equivalent or stronger isolation.
+**Recommendation:** Use `--disable-sandbox` when running crosvm under Firejail.
+For production deployments, evaluate whether Firejail's policies meet your security
+requirements, or consider running crosvm with its native minijail outside of Firejail.
 
 ## Resource Snapshot
 
@@ -112,17 +135,17 @@ The synthetic workload allocates 32 MiB and burns CPU briefly inside each profil
 
 | Stack | Wall Time | CPU Time | Peak RSS | Top Process RSS |
 | --- | ---: | ---: | ---: | ---: |
-| Firejail only | 1,096 ms | 1,064 ms | 52,448 KiB | 45,008 KiB |
-| Firecracker host profile | 893 ms | 859 ms | 49,236 KiB | 42,276 KiB |
-| kvmtool host profile | 877 ms | 863 ms | 49,092 KiB | 42,132 KiB |
-| crosvm host profile | 897 ms | 874 ms | 49,164 KiB | 42,188 KiB |
+| Firejail only | 1,073 ms | 1,028 ms | 52,552 KiB | 45,192 KiB |
+| Firecracker host profile | 859 ms | 828 ms | 49,260 KiB | 42,124 KiB |
+| kvmtool host profile | 832 ms | 824 ms | 48,972 KiB | 42,192 KiB |
+| crosvm host profile | 855 ms | 830 ms | 49,212 KiB | 42,244 KiB |
 
 ```text
 Peak RSS KiB
-firejail-only  #################################################### 52448
-firecracker    #################################################    49236
-kvmtool        #################################################    49092
-crosvm         #################################################    49164
+firejail-only  #################################################### 52552
+firecracker    #################################################    49260
+kvmtool        #################################################    48972
+crosvm         #################################################    49212
 ```
 
 ## Project Layout

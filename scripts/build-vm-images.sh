@@ -188,28 +188,51 @@ create_minimal_rootfs() {
     done
   fi
   
+  # Install Firejail in guest if available on host
+  if command -v firejail >/dev/null 2>&1; then
+    log "Installing Firejail in guest rootfs"
+    cp "$(which firejail)" "$rootfs_dir/usr/local/bin/firejail" 2>/dev/null || true
+    # Copy Firejail libraries
+    if [ -d /usr/lib/firejail ]; then
+      mkdir -p "$rootfs_dir/usr/lib/firejail"
+      cp -r /usr/lib/firejail/* "$rootfs_dir/usr/lib/firejail/" 2>/dev/null || true
+    fi
+    # Copy Firejail profiles
+    if [ -d /etc/firejail ]; then
+      mkdir -p "$rootfs_dir/etc/firejail"
+      cp -r /etc/firejail/* "$rootfs_dir/etc/firejail/" 2>/dev/null || true
+    fi
+  fi
+  
+  # Copy guest probe
+  cp "$ROOT_DIR/tests/guest_probe.sh" "$rootfs_dir/guest_probe.sh"
+  chmod +x "$rootfs_dir/guest_probe.sh"
+  
   # Create init script
   cat > "$rootfs_dir/init" <<'EOF'
 #!/bin/sh
-# Write marker to both stdout and /dev/console for maximum compatibility
 echo "VM init started"
 echo "VM init started" > /dev/console 2>/dev/null || true
 
-# Mount filesystems (ignore errors)
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 
-# Write success marker
+if [ -x /guest_probe.sh ]; then
+  echo "=== GUEST PROBE START ==="
+  echo "=== GUEST PROBE START ===" > /dev/console 2>/dev/null || true
+  /guest_probe.sh 2>&1
+  echo "=== GUEST PROBE END ==="
+  echo "=== GUEST PROBE END ===" > /dev/console 2>/dev/null || true
+fi
+
 echo "VM boot successful!"
 echo "VM boot successful!" > /dev/console 2>/dev/null || true
 echo "Kernel: $(uname -r)"
 echo "Hostname: $(hostname)"
 
-# Small delay to ensure output is flushed before poweroff
 sleep 1
 
-# Force immediate poweroff
 poweroff -f
 EOF
   chmod +x "$rootfs_dir/init"
