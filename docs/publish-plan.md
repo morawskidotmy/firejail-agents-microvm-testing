@@ -28,7 +28,6 @@ Recommended initial repository content:
 ```text
 README.md
 docs/findings.md
-docs/charts.md
 config.example.json
 pyproject.toml
 baseline-profiles/

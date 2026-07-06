@@ -17,9 +17,11 @@ and which host prerequisites are missing before real VM boot tests can run.
 | Approach | Boundary Model | Current Status |
 | --- | --- | --- |
 | Firejail only | agent -> Firejail -> host kernel | Measured |
-| Firejail + Firecracker | agent -> guest Firejail -> guest kernel -> Firecracker -> host Firejail | Measured until VM boot prerequisite |
-| Firejail + kvmtool | agent -> guest Firejail -> guest kernel -> lkvm -> host Firejail | Measured until VM boot prerequisite |
-| Firejail + crosvm | agent -> guest Firejail -> guest kernel -> crosvm -> host Firejail | Measured until VM boot prerequisite |
+| Firejail + Firecracker | VMM -> Firejail -> host kernel | Measured |
+| Firejail + kvmtool | VMM -> Firejail -> host kernel | Measured |
+| Firejail + crosvm | VMM -> Firejail -> host kernel | Measured |
+
+> **Note:** The current benchmark measures host Firejail wrapping the VMM process, which then boots a minimal VM. Guest Firejail profiles exist in `guest-profiles/` but are not yet integrated into the automated boot benchmark.
 
 ```text
 Layered microVM target
@@ -37,30 +39,72 @@ Latest local run:
 
 ```text
 Probe Results
-firejail-only  ##########   pass 10 | fail 0 | skip 4
-firecracker    ###########  pass 11 | fail 0 | skip 3
-kvmtool        ###########  pass 11 | fail 0 | skip 3
-crosvm         ###########  pass 11 | fail 0 | skip 3
+firejail-only              ############   pass 12 | fail 0 | skip 2
+firecracker                ############## pass 14 | fail 0 | skip 0
+kvmtool                    ############## pass 14 | fail 0 | skip 0
+crosvm                     ############## pass 14 | fail 0 | skip 0
+crosvm-no-disable-sandbox  #############  pass 13 | fail 1 | skip 0
 ```
 
 All measured Firejail profiles blocked the sensitive local paths and privileged
 actions covered by the harness. The VMM binaries were also invoked successfully
-under their host Firejail profiles.
+under their host Firejail profiles. All three VMMs successfully boot minimal
+guest VMs with KVM acceleration.
 
-The remaining blockers are host prerequisites, not profile failures:
+The crosvm-no-disable-sandbox configuration fails because crosvm's built-in
+minijail conflicts with Firejail. See [crosvm Sandbox Configuration](#crosvm-sandbox-configuration)
+for details.
+
+## VM Boot Performance
+
+Measured time from VMM launch to guest init printing "VM boot successful!" marker:
+
+| VMM | Boot Time | Peak RSS | CPU Time |
+| --- | ---: | ---: | ---: |
+| kvmtool | 1,023 ms | 67,904 KiB | 600 ms |
+| Firecracker | 1,485 ms | 45,308 KiB | 370 ms |
+| crosvm | 1,660 ms | 64,588 KiB | 1,170 ms |
 
 ```text
-Host Readiness
-KVM group        pass: current user is in kvm group
-/dev/kvm         fail: device is absent
-vmx/svm flags    fail: CPU virtualization flag not visible to Linux
-guest images     skip: kernel/rootfs images not configured
+Boot Time (ms)
+kvmtool        ################################### 1023
+firecracker    ################################################# 1485
+crosvm         ##################################################### 1660
 ```
 
-> [!NOTE]
-> Real VM boot overhead is intentionally not claimed yet. `/dev/kvm` is still
-> absent on the tested host, so Firecracker, kvmtool, and crosvm can be checked as
-> binaries under Firejail but cannot boot hardware-accelerated guests here.
+kvmtool boots fastest at 1,023ms, while Firecracker uses the least memory at
+45,308 KiB peak RSS. All three VMMs complete boot within 1.7 seconds under
+Firejail sandboxing.
+
+See [docs/firecracker.md](docs/firecracker.md), [docs/kvmtool.md](docs/kvmtool.md),
+and [docs/crosvm.md](docs/crosvm.md) for detailed analysis of each VMM.
+
+## crosvm Sandbox Configuration
+
+crosvm includes its own sandboxing layer (minijail) that conflicts with Firejail.
+The benchmark tests both configurations:
+
+| Configuration | Boot Time | Peak RSS | CPU Time | Status |
+| --- | ---: | ---: | ---: | ---: |
+| crosvm with `--disable-sandbox` | 1,655 ms | 64,756 KiB | 1,180 ms | ✅ Pass |
+| crosvm without `--disable-sandbox` | — | — | — | ❌ Fail |
+
+**Why `--disable-sandbox` is required:**
+
+crosvm's built-in minijail attempts to create a jail environment that conflicts
+with Firejail's sandboxing. Without `--disable-sandbox`, crosvm fails with:
+
+```
+ERROR crosvm: exiting with error 1: "/var/empty" is not a directory, cannot create jail
+```
+
+The sandboxing is still provided by the host Firejail profile, which applies
+comprehensive security policies including seccomp filters, capability drops,
+filesystem blacklists, and namespace isolation. crosvm's internal sandbox is
+redundant when running under Firejail.
+
+**Recommendation:** Always use `--disable-sandbox` when running crosvm under
+Firejail. The Firejail profile provides equivalent or stronger isolation.
 
 ## Resource Snapshot
 
@@ -68,17 +112,17 @@ The synthetic workload allocates 32 MiB and burns CPU briefly inside each profil
 
 | Stack | Wall Time | CPU Time | Peak RSS | Top Process RSS |
 | --- | ---: | ---: | ---: | ---: |
-| Firejail only | 1042 ms | 1013 ms | 52,400 KiB | 45,108 KiB |
-| Firecracker host profile | 883 ms | 856 ms | 49,292 KiB | 42,184 KiB |
-| kvmtool host profile | 866 ms | 850 ms | 49,264 KiB | 42,188 KiB |
-| crosvm host profile | 896 ms | 877 ms | 49,244 KiB | 42,212 KiB |
+| Firejail only | 1,096 ms | 1,064 ms | 52,448 KiB | 45,008 KiB |
+| Firecracker host profile | 893 ms | 859 ms | 49,236 KiB | 42,276 KiB |
+| kvmtool host profile | 877 ms | 863 ms | 49,092 KiB | 42,132 KiB |
+| crosvm host profile | 897 ms | 874 ms | 49,164 KiB | 42,188 KiB |
 
 ```text
 Peak RSS KiB
-firejail-only  #################################################### 52400
-firecracker    #################################################    49292
-kvmtool        #################################################    49264
-crosvm         #################################################    49244
+firejail-only  #################################################### 52448
+firecracker    #################################################    49236
+kvmtool        #################################################    49092
+crosvm         #################################################    49164
 ```
 
 ## Project Layout
@@ -147,7 +191,17 @@ scripts/enable-kvm-and-run.sh config.json
 
 ## Configure VM Boot Inputs
 
-Copy the example config and set kernel/rootfs paths for each VMM:
+Build minimal VM images (kernel + rootfs) for all three VMMs:
+
+```sh
+scripts/build-vm-images.sh
+```
+
+This downloads Linux kernel 6.1.110, builds it with minimal config for VM boot,
+creates a busybox-based rootfs, and generates `config.json` with the correct paths.
+The build takes 15-45 minutes depending on your system.
+
+Alternatively, copy the example config and set kernel/rootfs paths manually:
 
 ```sh
 cp config.example.json config.json
@@ -156,6 +210,36 @@ PATH="$HOME/.local/bin:$PATH" uv run python tests/bench_security.py --config con
 
 The runner scripts expect images to be inside this project directory or otherwise
 explicitly whitelisted by the caller.
+
+### VM Boot Configuration
+
+The benchmark now includes real VM boot probes when `/dev/kvm` is available and
+kernel/rootfs images are configured. Edit `config.json` to specify:
+
+```json
+{
+  "project_dir": ".",
+  "timeout_seconds": 6,
+  "boot_timeout_seconds": 30,
+  "firecracker": {
+    "binary": "firecracker",
+    "kernel_image": "/path/to/vmlinux",
+    "rootfs_image": "/path/to/rootfs.ext4",
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off",
+    "vcpu_count": 1,
+    "mem_size_mib": 128
+  }
+}
+```
+
+The `project_dir` field resolves relative paths in the config. The boot probe will:
+
+1. Generate VMM-specific configuration (Firecracker JSON config, kvmtool/crosvm CLI args)
+2. Launch the VMM under Firejail with the configured kernel and rootfs
+3. Measure boot time and resource usage
+4. Report success/failure/timeout
+
+Without `/dev/kvm` or configured images, the boot probe is skipped.
 
 ## Read The Review
 

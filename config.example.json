@@ -1,22 +1,29 @@
 {
   "project_dir": ".",
   "timeout_seconds": 6,
+  "boot_timeout_seconds": 30,
   "firecracker": {
     "binary": "firecracker",
     "kernel_image": "",
     "rootfs_image": "",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off",
+    "vcpu_count": 1,
+    "mem_size_mib": 128
   },
   "kvmtool": {
     "binary": "lkvm",
     "kernel_image": "",
     "rootfs_image": "",
-    "boot_args": "console=ttyS0 reboot=k panic=1"
+    "boot_args": "console=ttyS0 reboot=k panic=1",
+    "vcpu_count": 1,
+    "mem_size_mib": 128
   },
   "crosvm": {
     "binary": "crosvm",
     "kernel_image": "",
     "rootfs_image": "",
-    "boot_args": "console=ttyS0 reboot=k panic=1"
+    "boot_args": "console=ttyS0 reboot=k panic=1",
+    "vcpu_count": 1,
+    "mem_size_mib": 128
   }
 }

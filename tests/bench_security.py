@@ -72,6 +72,7 @@ class Measurement:
     processes: list[ProcessMeasurement]
     stdout_tail: str
     stderr_tail: str
+    boot_marker_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,12 @@ def project_root() -> Path:
 
 def load_config(root: Path, config_path: Path | None) -> dict[str, Any]:
     path = config_path or root / "config.example.json"
-    return json.loads(path.read_text())
+    config = json.loads(path.read_text())
+    project_dir = Path(config.get("project_dir", "."))
+    if not project_dir.is_absolute():
+        project_dir = path.parent / project_dir
+    config["resolved_project_dir"] = str(project_dir.resolve())
+    return config
 
 
 def stacks(root: Path) -> list[Stack]:
@@ -121,6 +127,13 @@ def stacks(root: Path) -> list[Stack]:
         ),
         Stack(
             "crosvm",
+            "layered",
+            root / "host-profiles/crosvm-host.profile",
+            "crosvm",
+            "crosvm",
+        ),
+        Stack(
+            "crosvm-no-disable-sandbox",
             "layered",
             root / "host-profiles/crosvm-host.profile",
             "crosvm",
@@ -173,7 +186,6 @@ def run_measured(
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         start_new_session=True,
     )
     monitor = monitor_process(proc, timeout)
@@ -188,12 +200,113 @@ def run_measured(
         max_rss_kib=monitor.max_tree_rss_kib,
         max_processes=monitor.max_processes,
         processes=monitor.processes,
-        stdout_tail=tail(stdout),
-        stderr_tail=tail(stderr),
+        stdout_tail=tail(stdout.decode("utf-8", errors="replace")),
+        stderr_tail=tail(stderr.decode("utf-8", errors="replace")),
     )
 
 
-def monitor_process(proc: subprocess.Popen[str], timeout: int) -> MonitorResult:
+def run_measured_with_marker(
+    command: list[str],
+    timeout: int,
+    marker: str,
+    env: dict[str, str] | None = None,
+) -> Measurement:
+    """Run command and detect marker in output, recording time to marker."""
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    started = time.perf_counter()
+    proc = subprocess.Popen(
+        command,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+
+    max_rss = 0
+    max_processes = 0
+    states: dict[int, ProcessState] = {}
+    timed_out = False
+    marker_found = False
+    marker_ms = None
+    stdout_chunks = []
+    stderr_chunks = []
+    deadline = time.monotonic() + timeout
+
+    # Accumulate all output for marker detection
+    marker_bytes = marker.encode()
+    all_output = bytearray()
+
+    import select
+
+    while proc.poll() is None:
+        pids = process_tree(proc.pid)
+        max_processes = max(max_processes, len(pids))
+        max_rss = max(max_rss, sample_processes(pids, states))
+
+        ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.02)
+
+        for fd in ready:
+            chunk = fd.read1(4096)
+            if not chunk:
+                continue
+
+            if fd == proc.stdout:
+                stdout_chunks.append(chunk)
+            else:
+                stderr_chunks.append(chunk)
+
+            if not marker_found:
+                # Accumulate all output for marker detection
+                all_output.extend(chunk)
+
+                # Check for marker in accumulated output
+                if marker_bytes in all_output:
+                    marker_found = True
+                    marker_ms = round((time.perf_counter() - started) * 1000)
+                    kill_process_group(proc)
+                    timed_out = True
+                    break
+
+        if marker_found or time.monotonic() > deadline:
+            if not marker_found:
+                kill_process_group(proc)
+                timed_out = True
+            break
+
+    stdout, stderr = collect_remaining_output(proc)
+    if stdout:
+        stdout_chunks.append(stdout)
+    if stderr:
+        stderr_chunks.append(stderr)
+
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    observed_ms = round((time.perf_counter() - started) * 1000)
+
+    return Measurement(
+        returncode=proc.returncode,
+        timed_out=timed_out,
+        wall_ms=observed_ms,
+        user_cpu_ms=round((after.ru_utime - before.ru_utime) * 1000),
+        system_cpu_ms=round((after.ru_stime - before.ru_stime) * 1000),
+        max_rss_kib=max_rss,
+        max_processes=max_processes,
+        processes=process_measurements(states, observed_ms),
+        stdout_tail=tail(b"".join(stdout_chunks).decode("utf-8", errors="replace"), 4000),
+        stderr_tail=tail(b"".join(stderr_chunks).decode("utf-8", errors="replace"), 4000),
+        boot_marker_ms=marker_ms,
+    )
+
+
+def collect_remaining_output(proc: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
+    """Collect remaining stdout/stderr after process termination."""
+    try:
+        return proc.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return proc.communicate()
+
+
+def monitor_process(proc: subprocess.Popen[bytes], timeout: int) -> MonitorResult:
     started = time.perf_counter()
     deadline = time.monotonic() + timeout
     max_rss = 0
@@ -219,7 +332,7 @@ def monitor_process(proc: subprocess.Popen[str], timeout: int) -> MonitorResult:
     )
 
 
-def finish_process(proc: subprocess.Popen[str], timed_out: bool) -> tuple[str, str]:
+def finish_process(proc: subprocess.Popen[bytes], timed_out: bool) -> tuple[bytes, bytes]:
     if timed_out:
         proc.wait(timeout=2)
     return proc.communicate(timeout=2)
@@ -443,7 +556,7 @@ def usage_exit(result: Measurement) -> bool:
     return result.returncode == 22 and "usage:" in result.stdout_tail.lower()
 
 
-def boot_probe(stack: Stack, config: dict[str, Any]) -> ProbeResult:
+def boot_probe(stack: Stack, config: dict[str, Any], root: Path) -> ProbeResult:
     if stack.binary_key is None:
         return ProbeResult("vm_boot", "skip", "baseline has no VM boot step")
     section = config.get(stack.binary_key, {})
@@ -451,7 +564,190 @@ def boot_probe(stack: Stack, config: dict[str, Any]) -> ProbeResult:
     rootfs = Path(section.get("rootfs_image") or "")
     if not kernel.exists() or not rootfs.exists():
         return ProbeResult("vm_boot", "skip", "kernel_image/rootfs_image not configured or missing")
-    return ProbeResult("vm_boot", "skip", "boot automation is intentionally runner-driven")
+    if not Path("/dev/kvm").exists():
+        return ProbeResult("vm_boot", "skip", "/dev/kvm does not exist; cannot boot VM")
+    timeout = int(config.get("boot_timeout_seconds", 30))
+    command = build_boot_command(stack, config, root, kernel, rootfs)
+    result = run_measured_with_marker(command, timeout, "VM boot successful!")
+
+    # Check for failure indicators
+    failure_indicators = [
+        "Kernel panic",
+        "Unable to mount root",
+        "Cannot open root device",
+        "Requested init /init failed",
+        "VFS: Unable to mount",
+    ]
+    combined_output = result.stdout_tail + result.stderr_tail
+    has_failure = any(indicator in combined_output for indicator in failure_indicators)
+
+    if has_failure:
+        return ProbeResult(
+            "vm_boot",
+            "fail",
+            "Boot failure detected in output",
+            result,
+        )
+
+    # Check if marker was found
+    if result.boot_marker_ms is not None:
+        return ProbeResult(
+            "vm_boot",
+            "pass",
+            f"VM boot completed in {result.boot_marker_ms}ms (marker detected)",
+            result,
+        )
+
+    if result.timed_out:
+        return ProbeResult(
+            "vm_boot",
+            "fail",
+            f"VM boot timed out after {timeout}s without success message",
+            result,
+        )
+
+    return ProbeResult(
+        "vm_boot",
+        "fail",
+        "VM boot did not complete successfully (no success message found)",
+        result,
+    )
+
+
+def build_boot_command(
+    stack: Stack, config: dict[str, Any], root: Path, kernel: Path, rootfs: Path
+) -> list[str]:
+    section = config.get(stack.binary_key, {})
+    binary = section.get("binary") or stack.default_binary or stack.binary_key
+    boot_args = section.get("boot_args", "console=ttyS0 reboot=k panic=1")
+    vcpus = section.get("vcpu_count", 1)
+    mem_mib = section.get("mem_size_mib", 128)
+    args = (stack.profile, root, binary, kernel, rootfs, boot_args, vcpus, mem_mib)
+    if stack.name == "firecracker":
+        return build_firecracker_command(*args)
+    if stack.name == "kvmtool":
+        return build_kvmtool_command(*args)
+    if stack.name in ("crosvm", "crosvm-no-disable-sandbox"):
+        disable_sandbox = stack.name != "crosvm-no-disable-sandbox"
+        return build_crosvm_command(*args, disable_sandbox=disable_sandbox)
+    return ["firejail", "--quiet", f"--profile={stack.profile}", "/bin/true"]
+
+
+def build_firecracker_command(
+    profile: Path,
+    root: Path,
+    binary: str,
+    kernel: Path,
+    rootfs: Path,
+    boot_args: str,
+    vcpus: int,
+    mem_mib: int,
+) -> list[str]:
+    config_path = root / "results" / "firecracker-boot-config.json"
+    socket_path = root / "results" / "firecracker-boot.socket"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.unlink(missing_ok=True)
+    config = {
+        "boot-source": {"kernel_image_path": str(kernel), "boot_args": boot_args},
+        "drives": [
+            {
+                "drive_id": "rootfs",
+                "path_on_host": str(rootfs),
+                "is_root_device": True,
+                "is_read_only": False,
+            }
+        ],
+        "machine-config": {"vcpu_count": vcpus, "mem_size_mib": mem_mib},
+        "serial-console": {"stdout": True},
+    }
+    config_path.write_text(json.dumps(config, indent=2))
+    return [
+        "firejail",
+        "--quiet",
+        f"--profile={profile}",
+        f"--whitelist={root}",
+        f"--whitelist={kernel}",
+        f"--whitelist={rootfs}",
+        "--",
+        binary,
+        "--config-file",
+        str(config_path),
+        "--api-sock",
+        str(socket_path),
+    ]
+
+
+def build_kvmtool_command(
+    profile: Path,
+    root: Path,
+    binary: str,
+    kernel: Path,
+    rootfs: Path,
+    boot_args: str,
+    vcpus: int,
+    mem_mib: int,
+) -> list[str]:
+    return [
+        "firejail",
+        "--quiet",
+        f"--profile={profile}",
+        f"--whitelist={root}",
+        f"--whitelist={kernel}",
+        f"--whitelist={rootfs}",
+        "--",
+        binary,
+        "run",
+        "--kernel",
+        str(kernel),
+        "--disk",
+        str(rootfs),
+        "--cpus",
+        str(vcpus),
+        "--mem",
+        str(mem_mib),
+        "--console",
+        "virtio",
+        "--params",
+        boot_args,
+    ]
+
+
+def build_crosvm_command(
+    profile: Path,
+    root: Path,
+    binary: str,
+    kernel: Path,
+    rootfs: Path,
+    boot_args: str,
+    vcpus: int,
+    mem_mib: int,
+    disable_sandbox: bool = True,
+) -> list[str]:
+    # Use --disable-sandbox to prevent crosvm's minijail from conflicting with Firejail.
+    # The sandboxing is provided by the host Firejail profile, not crosvm's internal sandbox.
+    cmd = [
+        "firejail",
+        "--quiet",
+        f"--profile={profile}",
+        f"--whitelist={root}",
+        f"--whitelist={kernel}",
+        f"--whitelist={rootfs}",
+        "--",
+        binary,
+        "run",
+        "--cpus",
+        str(vcpus),
+        "--mem",
+        str(mem_mib),
+        "--params",
+        boot_args,
+        "--block",
+        f"path={rootfs},root",
+    ]
+    if disable_sandbox:
+        cmd.append("--disable-sandbox")
+    cmd.append(str(kernel))
+    return cmd
 
 
 def kvm_probe(stack: Stack, root: Path, timeout: int) -> ProbeResult:
@@ -481,7 +777,7 @@ def run_stack(
     ]
     probes.extend(permission_probes(stack, root, fixtures, timeout))
     probes.extend(action_probes(stack, root, timeout))
-    probes.extend([binary_probe(stack, config, root, timeout), boot_probe(stack, config)])
+    probes.extend([binary_probe(stack, config, root, timeout), boot_probe(stack, config, root)])
     return {
         "name": stack.name,
         "mode": stack.mode,
@@ -591,11 +887,14 @@ def probe_line(probe: dict[str, Any]) -> str:
 
 def measurement_summary(measurement: dict[str, Any]) -> str:
     total_cpu = measurement["user_cpu_ms"] + measurement["system_cpu_ms"]
-    return (
+    base = (
         f" (wall_ms={measurement['wall_ms']}, cpu_ms={total_cpu}, "
         f"max_rss_kib={measurement['max_rss_kib']}, "
-        f"max_processes={measurement['max_processes']})"
+        f"max_processes={measurement['max_processes']}"
     )
+    if measurement.get("boot_marker_ms") is not None:
+        base += f", boot_marker_ms={measurement['boot_marker_ms']}"
+    return base + ")"
 
 
 def process_summary(processes: list[dict[str, Any]]) -> str:

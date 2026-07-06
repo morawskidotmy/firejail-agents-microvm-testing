@@ -7,3 +7,7 @@ config.json
 # Generated local reports include absolute paths and process IDs.
 results/latest.*
 results/*.tmp
+
+# Generated VM images and build artifacts
+images/
+.build/
